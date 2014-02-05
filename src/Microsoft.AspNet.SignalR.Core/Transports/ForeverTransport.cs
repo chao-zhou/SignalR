@@ -1,7 +1,6 @@
 ﻿// Copyright (c) Microsoft Open Technologies, Inc. All rights reserved. See License.md in the project root for license information.
 
 using System;
-using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
@@ -62,6 +61,14 @@ namespace Microsoft.AspNet.SignalR.Transports
             get { return _jsonSerializer; }
         }
 
+        protected virtual Func<PersistentResponse, object, Task<bool>> MessageHandler
+        {
+            get
+            {
+                return OnMessageReceived;
+            }
+        }
+
         internal TaskCompletionSource<object> InitializeTcs { get; set; }
 
         protected virtual void OnSending(string payload)
@@ -109,7 +116,7 @@ namespace Microsoft.AspNet.SignalR.Transports
         {
             Connection = connection;
 
-            if (Context.Request.LocalPath.EndsWith("/send", StringComparison.OrdinalIgnoreCase))
+            if (IsSendRequest)
             {
                 return ProcessSendRequest();
             }
@@ -160,7 +167,6 @@ namespace Microsoft.AspNet.SignalR.Transports
             return TaskAsyncHelper.Empty;
         }
 
-        
         protected void OnError(Exception ex)
         {
             IncrementErrors();
@@ -175,7 +181,7 @@ namespace Microsoft.AspNet.SignalR.Transports
         private async Task ProcessSendRequest()
         {
             INameValueCollection form = await Context.Request.ReadForm();
-            string data = form["data"];
+            string data = form["data"] ?? Context.Request.QueryString["data"];
 
             if (Received != null)
             {
@@ -212,7 +218,7 @@ namespace Microsoft.AspNet.SignalR.Transports
                     return connected().Then((conn, id) => conn.Initialize(id), connection, ConnectionId);
                 };
             }
-            else
+            else if (!IsPollRequest)
             {
                 initialize = Reconnected;
             }
@@ -262,7 +268,7 @@ namespace Microsoft.AspNet.SignalR.Transports
 
                 // Ensure delegate continues to use the C# Compiler static delegate caching optimization.
                 IDisposable subscription = connection.Receive(LastMessageId,
-                                                              (response, state) => OnMessageReceived(response, state),
+                                                              (response, state) => MessageHandler(response, state),
                                                                MaxMessages,
                                                                messageContext);
 
@@ -387,11 +393,14 @@ namespace Microsoft.AspNet.SignalR.Transports
             }
         }
 
-        private class MessageContext
+        internal class MessageContext
         {
             public ForeverTransport Transport;
             public RequestLifetime Lifetime;
             public IDisposable Registration;
+
+            // Used exclusively by LongPollingTransport
+            public bool ResponseSent;
 
             public MessageContext(ForeverTransport transport, RequestLifetime lifetime, IDisposable registration)
             {
@@ -401,7 +410,7 @@ namespace Microsoft.AspNet.SignalR.Transports
             }
         }
 
-        private class RequestLifetime
+        internal class RequestLifetime
         {
             private readonly HttpRequestLifeTime _lifetime;
             private readonly ForeverTransport _transport;
